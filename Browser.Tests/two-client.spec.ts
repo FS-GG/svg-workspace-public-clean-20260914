@@ -63,6 +63,18 @@ test("two SVG arena clients observe the same authoritative move", async ({ brows
   const contextA = await browser.newContext();
   const contextB = await browser.newContext();
   try {
+    await contextA.addInitScript(() => {
+      const nativeWebSocket = window.WebSocket;
+      const sockets: WebSocket[] = [];
+      (window as unknown as { __fsggAuthoritySockets: WebSocket[] }).__fsggAuthoritySockets = sockets;
+      window.WebSocket = new Proxy(nativeWebSocket, {
+        construct(target, argumentsList) {
+          const socket = Reflect.construct(target, argumentsList) as WebSocket;
+          sockets.push(socket);
+          return socket;
+        }
+      });
+    });
     const pageA = await contextA.newPage();
     const pageB = await contextB.newPage();
     const otherClientFrames: string[] = [];
@@ -104,9 +116,13 @@ test("two SVG arena clients observe the same authoritative move", async ({ brows
     await expect(pageA.locator('[data-scene-object-id="player"]')).toBeVisible();
     await expect(pageA.locator(`[data-scene-object-id="peer:${playerB}"]`)).toBeVisible();
     await expect(pageB.locator(`[data-scene-object-id="peer:${playerA}"]`)).toBeVisible();
-    const hazardRect = pageA.locator('[data-scene-object-id="hazard"] rect');
-    await expect(hazardRect).toHaveAttribute("x", await arenaA.getAttribute("data-authority-hazard-x") ?? "");
-    await expect(hazardRect).toHaveAttribute("y", await arenaA.getAttribute("data-authority-hazard-y") ?? "");
+    await expect.poll(() => pageA.evaluate(() => {
+      const host = document.querySelector("#foundation-continuous-host");
+      const hazard = document.querySelector('[data-scene-object-id="hazard"] rect');
+      return host !== null && hazard !== null
+        && hazard.getAttribute("x") === host.getAttribute("data-authority-hazard-x")
+        && hazard.getAttribute("y") === host.getAttribute("data-authority-hazard-y");
+    })).toBe(true);
     const startCol = Number(await arenaA.getAttribute("data-authority-self-col"));
     const startRow = Number(await arenaA.getAttribute("data-authority-self-row"));
     await arenaA.focus();
@@ -156,17 +172,20 @@ test("two SVG arena clients observe the same authoritative move", async ({ brows
     }
     await expect.poll(async () => Number(await arenaA.getAttribute("data-player-health"))).toBeLessThan(3);
     await expect.poll(async () => Number(await arenaB.getAttribute("data-player-health"))).toBeLessThan(3);
-    // The wall covers the row-4 crossing at column 10. Prove that collision is
-    // authoritative, then return below it and use the open collectible column.
+    // Leave the moving hazard row immediately. The wall covers the row-4
+    // crossing at column 10; observe that collision from safe row 5, then use
+    // the open collectible column.
+    while (row > 5) await move("w", "row", --row);
     while (col < 10) await move("d", "col", ++col);
     while (col > 10) await move("a", "col", --col);
-    while (row > 5) await move("w", "row", --row);
     const beforeBlockedTick = Number(await arenaA.getAttribute("data-authority-tick"));
     await arenaA.press("w");
+    await arenaA.press("a");
     await expect.poll(async () => Number(await arenaA.getAttribute("data-authority-tick"))).toBeGreaterThan(beforeBlockedTick);
     await expect(arenaA).toHaveAttribute("data-authority-self-row", "5");
-    await expect(arenaB).toHaveAttribute("data-authority-snapshot", new RegExp(`${playerA}:10,5`));
-    while (row < 8) await move("s", "row", ++row);
+    await expect(arenaA).toHaveAttribute("data-authority-self-col", "9");
+    await expect(arenaB).toHaveAttribute("data-authority-snapshot", new RegExp(`${playerA}:9,5`));
+    col = 9;
     while (col < 5) await move("d", "col", ++col);
     while (col > 5) await move("a", "col", --col);
     while (row > 2) await move("w", "row", --row);
@@ -185,6 +204,47 @@ test("two SVG arena clients observe the same authoritative move", async ({ brows
     await expect(arenaB).toHaveAttribute("data-player-outcome", "playing");
     await expect(arenaA).toHaveAttribute("data-player-score", "0");
     await expect(arenaB).toHaveAttribute("data-player-score", "0");
+    const burstCol = Number(await arenaA.getAttribute("data-authority-self-col"));
+    let burstRow = Number(await arenaA.getAttribute("data-authority-self-row"));
+    while (burstRow > 0) await move("w", "row", --burstRow);
+    await arenaA.press("w");
+    await arenaA.press("s");
+    await expect(arenaA).toHaveAttribute("data-authority-self-row", String(burstRow + 1));
+    for (let press = 0; press < 4; press += 1) await arenaA.press("s");
+    const afterBurstRow = burstRow + 5;
+    await expect(arenaA).toHaveAttribute("data-authority-self-row", String(afterBurstRow));
+    await expect(arenaB).toHaveAttribute("data-authority-snapshot", new RegExp(`${playerA}:${burstCol},${afterBurstRow}`));
+
+    const diagnosticsBeforeReconnect = diagnostics.length;
+    const expectedBeforeReconnect = expectedConsole.length;
+    for (let press = 0; press < 4; press += 1) await arenaA.press("s");
+    await pageA.evaluate(() => {
+      const sockets = (window as unknown as { __fsggAuthoritySockets: WebSocket[] }).__fsggAuthoritySockets;
+      sockets.at(-1)?.close(4000, "controlled reconnect");
+    });
+    await expect.poll(() => pageA.evaluate(() =>
+      (window as unknown as { __fsggAuthoritySockets: WebSocket[] }).__fsggAuthoritySockets.length)).toBeGreaterThan(1);
+    await expect(arenaA).toHaveAttribute("data-authority-status", "synchronized", { timeout: 15_000 });
+    const reconnectedTick = Number(await arenaA.getAttribute("data-authority-tick"));
+    await expect.poll(async () => Number(await arenaA.getAttribute("data-authority-tick"))).toBeGreaterThan(reconnectedTick + 1);
+    const settledReconnectRow = Number(await arenaA.getAttribute("data-authority-self-row"));
+    expect(settledReconnectRow).toBeGreaterThanOrEqual(afterBurstRow);
+    expect(settledReconnectRow).toBeLessThanOrEqual(afterBurstRow + 1); // At most the already-admitted command may commit.
+    const settledReconnectTick = Number(await arenaA.getAttribute("data-authority-tick"));
+    await expect.poll(async () => Number(await arenaA.getAttribute("data-authority-tick"))).toBeGreaterThan(settledReconnectTick + 2);
+    await expect(arenaA).toHaveAttribute("data-authority-self-row", String(settledReconnectRow));
+    const socketGenerations = await pageA.evaluate(() =>
+      (window as unknown as { __fsggAuthoritySockets: WebSocket[] }).__fsggAuthoritySockets.length);
+    const controlledReconnectDiagnostics = diagnostics.slice(diagnosticsBeforeReconnect);
+    const controlledReconnectConsole = expectedConsole.splice(expectedBeforeReconnect);
+    expect(controlledReconnectDiagnostics.length).toBeGreaterThan(0);
+    expect(controlledReconnectDiagnostics.every(item =>
+      item.kind === "console" && /^info: \[.+] Information: Connection disconnected\.$/.test(item.detail))).toBe(true);
+    diagnostics.splice(diagnosticsBeforeReconnect, controlledReconnectDiagnostics.length);
+    await testInfo.attach("controlled-transport-reconnect", {
+      body: Buffer.from(JSON.stringify({ staleInputsReplayed: false, socketGenerations, diagnostics: controlledReconnectDiagnostics, expectedConsole: controlledReconnectConsole }, null, 2)),
+      contentType: "application/json"
+    });
     await pageA.locator("#foundation-export").click();
     await expect(pageA.locator("#foundation-persistence-status")).toContainText("Archive exported");
     await expect(arenaA).toHaveAttribute("data-archive-length", /[1-9][0-9]*/);
