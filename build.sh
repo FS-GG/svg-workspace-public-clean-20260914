@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 "$root/scripts/check-svg-receiver-authority.py"
 mkdir -p artifacts/test-results
 
 # ── The lockfiles must have SHIPPED with this workspace (FS.GG.Templates#380) ────
