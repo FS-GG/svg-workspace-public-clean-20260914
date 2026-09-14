@@ -1,0 +1,33 @@
+{
+  "schema": "fsgg.svg-workspace.synthetic-receiver-source/v1",
+  "purpose": "public synthetic conformance receiver; no product release",
+  "route": "clean-native-wizard",
+  "template": {
+    "version": "0.14.0",
+    "sourceHead": "5ef422de9f48b9763f12794882fe2b760607873d",
+    "nativeArchiveSha256": "f301eb3e8264e2b3e9ab33f7b276f3480a7339b1cd5834a1e4876375be5758d4",
+    "archiveRetainedInRepository": false
+  },
+  "wizard": {
+    "version": "0.11.2",
+    "packageSha256": "ccc249af7450583f792a5089c0b16b35d5c0a82be68090b14512af488b2c6d6f",
+    "packageRetainedInRepository": false
+  },
+  "sdd": {
+    "version": "1.8.0",
+    "executableSha256": "cc4282b6ae3084df97e6c2d913b8c447bad671b721729430120ed9968f51ae1b"
+  },
+  "sdk": "10.0.400",
+  "invocation": [
+    "new-sdd-workspace",
+    ".",
+    "SvgWorkspacePublicClean",
+    "--template", "fable-game",
+    "--lifecycle", "typed-sdd",
+    "--bundle", "complete",
+    "--ref", "5ef422de9f48b9763f12794882fe2b760607873d",
+    "--pinned",
+    "--no-governance",
+    "--no-coordination"
+  ]
+}
